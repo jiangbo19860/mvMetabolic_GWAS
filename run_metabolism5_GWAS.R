@@ -1,57 +1,58 @@
-## Run GWAS of the single common factor model on the Computing Cluster
+## =======================================================================
+## Script Name: run_metabolism5_GWAS.R
+## Description: Run multivariate GWAS for the shared metabolic liability 
+##              (Single Common Factor Model) using Genomic SEM on an HPC.
+## =======================================================================
 
-setwd("/mnt/metabolism5_GWAS")
+# 1. Set the working directory (Change this to your actual server path)
+setwd("mnt/metabolism5_GWAS")
 
-# Load required R packages
-require(gdata)
-require(lavaan)
-require(doParallel)
-require(stringr)
-require(Matrix)
-require(R.utils)
-require(dplyr)
-require(utils)
+# 2. Load necessary R packages
 require(GenomicSEM)
 require(data.table)
 
 starttime <- Sys.time()
-cat("Start time:", format(starttime), "\n")
+print(paste("Start time:", starttime))
 
-cat("Loading data...\n")
+# 3. Load the LDSC output covariance matrix
+print("Loading LDSC covariance matrix...")
+load("metabolism5_S_LDSCOutput.RData") 
 
-# Load LDSC results object
-# The RData should contain an object named LDSCoutput
-load("metabolism5_S_gSEM_S_LDSCOutput.RData") 
+print("Loading prepped summary statistics...")
+print(Sys.time() - starttime)
 
-cat("Processing data...\n")
-
-# Load and read summary statistics file containing SNP information
-# (should be a file processed and merged by munge function with genome-wide SNPs)
+# 4. Load the prepped summary statistics containing all genome-wide SNPs
 sumstats <- fread("prepped_sumstats_metabolism5.txt")
 
-cat("Data loaded. Elapsed time:", format(Sys.time() - starttime), "\n")
+print("Data loaded successfully.")
+print(Sys.time() - starttime)
 
-# Get environment variable (Task ID) from SLURM array task for chunk specification
+# 5. Get environment variables from SLURM array task ID
 args <- commandArgs(trailingOnly = TRUE)
-job_id <- if (length(args) > 0) as.numeric(args[1]) else 1
+job_id <- as.numeric(args[1])
 
-# Divide millions of SNPs into chunks (adjust chunk_size based on node configuration)
+# Fallback for local testing if job_id is missing
+if (is.na(job_id)) {
+  job_id <- 1
+}
+
+# 6. Split millions of SNPs into manageable chunks for parallel processing
 chunk_size <- 10000 
-snpj <- 1:nrow(sumstats)
-chunks <- split(snpj, ceiling(seq_along(snpj) / chunk_size))
-chunk_idx <- min(job_id, length(chunks))
-chunk <- chunks[[chunk_idx]]
+snp_index <- 1:nrow(sumstats)
+chunks <- split(snp_index, ceiling(seq_along(snp_index) / chunk_size))
+chunk_idx <- job_id
+current_chunk <- chunks[[chunk_idx]]
 
-# Define single factor structural equation model for metabolism 5 diseases
-# Note: SNP effect estimation requires explicit "F1 ~ SNP" line for userGWAS
+# 7. Define the single common factor model for the 5 metabolic traits
+# F1 represents the shared metabolic liability
 model <- "
-F1 =~ NA*GOUT + HYPTENSESS + LIPOPROT + NAFLD + T2D
+F1 =~ NA*GOUT + HYPTENSESS + DISLIPIDIMIA + NAFLD + T2D
 F1 ~~ 1*F1
 GOUT ~~ a*GOUT
 a > .0001
 HYPTENSESS ~~ b*HYPTENSESS
 b > .0001
-LIPOPROT ~~ c*LIPOPROT
+DISLIPIDIMIA ~~ c*DISLIPIDIMIA
 c > .0001
 NAFLD ~~ d*NAFLD
 d > .0001
@@ -60,37 +61,39 @@ e > .0001
 F1 ~ SNP
 "
 
-# Specify regression paths to extract (extract only F1 explained by SNP)
-sub <- c("F1~SNP")
+# 8. Specify the parameter to extract (SNP effect on the common factor F1)
+sub_extract <- c("F1~SNP")
 
-cat("Running GWAS for chunk:", chunk_idx, "\n")
-cat("Elapsed time:", format(Sys.time() - starttime), "\n")
+print(paste("Running multivariate GWAS for chunk:", chunk_idx))
+print(Sys.time() - starttime)
 
-# Run multivariate GWAS
-# toler=1e-30 handles singular matrix errors; fix_measurement=TRUE speeds up computation
+# 9. Run the Genomic SEM userGWAS function
 results <- userGWAS(
-    covstruc = LDSCoutput, 
-    SNPs = sumstats[chunk, ], 
-    model = model, 
-    parallel = TRUE, 
-    sub = sub, 
-    cores = 36,
-    GC = "none", 
-    smooth_check = TRUE, 
-    printwarn = TRUE,
-    toler = 1e-30,
-    fix_measurement = TRUE,
-    Q_SNP = TRUE
+  covstruc = LDSCoutput, 
+  SNPs = sumstats[current_chunk, ], 
+  model = model, 
+  parallel = TRUE, 
+  sub = sub_extract, 
+  cores = 36,                 
+  GC = "none", 
+  smooth_check = TRUE, 
+  printwarn = TRUE,
+  toler = 1e-30,              
+  fix_measurement = TRUE,     
+  Q_SNP = TRUE                
 )
 
-cat("Writing GWAS output...\n")
+print("Writing GWAS output to file...")
+print(Sys.time() - starttime)
 
-# Save output results
+# 10. Save the chunk results to a tab-separated file
+output_filename <- paste0("metabolism5_factor_F1_chunk_", chunk_idx, ".tab")
+
 write.table(results[[1]], 
-                        file = paste0("metabolism5_factor_F1_", chunk_idx, ".tab"), 
-                        sep = "\t", 
-                        row.names = FALSE, 
-                        quote = FALSE)
+            file = output_filename, 
+            sep = "\t", 
+            row.names = FALSE, 
+            quote = FALSE)
 
-cat("Finished chunk:", chunk_idx, "\n")
-cat("Total elapsed time:", format(Sys.time() - starttime), "\n")
+print(paste("Successfully finished chunk:", chunk_idx))
+print(Sys.time() - starttime)
